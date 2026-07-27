@@ -30,6 +30,9 @@ class Author(UUIDModel, TimeStampedModel):
     def __str__(self):
         return f'{self.first_name[0]}. {self.last_name}; {self.date_of_birth}'
 
+    class Meta:
+        db_table = 'authors'
+
 
 class AuthorDetail(TimeStampedModel):
     author = models.OneToOneField(
@@ -148,10 +151,15 @@ class Book(UUIDModel, TimeStampedModel):
         ]
 
     @property
-    def rating(self):
-        from django.db.models import Avg
-        avg = self.reviews.aggregate(avg=Avg('rating'))['avg']
-        return round(avg, 2) if avg is not None else 0
+    def rating_python(self):
+        items = self.reviews.all()
+        return sum(item.rating for item in items) / len(items) if len(items) else 0
+
+    @property
+    def rating_db(self):
+        from django.db.models import Avg, Count, Min, Max, Sum
+        mean = self.reviews.aggregate(mean=Avg('rating'))['mean']
+        return round(mean, 2) if mean is not None else 0
 
     def __str__(self):
         return self.title

@@ -23,6 +23,7 @@ from django.conf.urls.static import static
 urlpatterns = [
     path('admin/', admin.site.urls),
     path('', library_views.index, name='library_index'),
+    path('book/', library_views.post_book, name='post_book'),
 ]
 
 if settings.DEBUG:
