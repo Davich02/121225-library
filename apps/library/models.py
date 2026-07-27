@@ -1,32 +1,20 @@
-import uuid
-
 from django.db import models
 from django.utils.text import slugify
 from django.utils.translation import gettext_lazy as _
 from django.core.validators import MinValueValidator, MaxValueValidator
-from django.core.exceptions import ValidationError
 from django.utils import timezone
-
 from django.conf import settings
 
-from apps.core.models import UUIDModel, TimeStampedModel, Gender
-
-
-def age_validator(value):
-    today = timezone.now().date()
-    if value > today:
-        raise ValidationError(f'You are not born')
-
-    age = (today.year - value.year -
-            ((today.month, today.year) < (value.month, value.day)))
-    if not 6 <= age <= 120:
-        raise ValidationError('Your age must be between 6 and 120!')
+from apps.core.models import UUIDModel, TimeStampedModel, Gender, age_validator
 
 
 class Author(UUIDModel, TimeStampedModel):
     first_name = models.CharField(max_length=50, verbose_name=_('First Name'))
     last_name = models.CharField(max_length=50, verbose_name=_('Last Name'))
-    date_of_birth = models.DateField(verbose_name=_('Date of Birth'))
+    date_of_birth = models.DateField(
+        validators=[age_validator],
+        verbose_name=_('Date of Birth'),
+    )
     profile = models.URLField(blank=True, verbose_name=_('Profile URL'))
     rating = models.IntegerField(
         validators=[MinValueValidator(1), MaxValueValidator(10)],
@@ -55,6 +43,10 @@ class AuthorDetail(TimeStampedModel):
     birth_city = models.CharField(blank=True, max_length=50, verbose_name=_('Birth City'))
     gender = models.CharField(choices=Gender.choices, max_length=1, verbose_name=_('Gender'))
 
+    class Meta:
+        verbose_name = _('Author Detail')
+        verbose_name_plural = _('Author Details')
+
     def __str__(self):
         return f'Details of {self.author}'
 
@@ -62,17 +54,23 @@ class AuthorDetail(TimeStampedModel):
 class Category(models.Model):
     name = models.CharField(max_length=50, unique=True, verbose_name=_('Name'))
 
+    class Meta:
+        verbose_name = _('Category')
+        verbose_name_plural = _('Categories')
+
     def __str__(self):
         return self.name
 
 
 class Library(UUIDModel, TimeStampedModel):
     name = models.CharField(max_length=50, verbose_name=_('Name'))
-    location = models.CharField(max_length=50, verbose_name=_('Location'), unique=True)
+    location = models.CharField(max_length=50, unique=True, verbose_name=_('Location'))
     site = models.URLField(blank=True, verbose_name=_('Site'))
     slug = models.SlugField(max_length=70, unique=True, blank=True, verbose_name=_('Slug'))
 
     class Meta:
+        verbose_name = _('Library')
+        verbose_name_plural = _('Libraries')
         ordering = ['-created_at']
         get_latest_by = 'created_at'
 
@@ -81,46 +79,22 @@ class Library(UUIDModel, TimeStampedModel):
 
     def save(self, *args, **kwargs):
         if not self.slug:
-            self.slug = slugify(self.name)
+            base_slug = slugify(self.name)
+            slug = base_slug
+            counter = 1
+            # защита от коллизий: Library с одинаковым name даст одинаковый slug
+            while Library.objects.filter(slug=slug).exclude(pk=self.pk).exists():
+                slug = f'{base_slug}-{counter}'
+                counter += 1
+            self.slug = slug
         super().save(*args, **kwargs)
-
-
-
-class Member(UUIDModel, TimeStampedModel):
-    class Role(models.TextChoices):
-        ADMIN = 'admin', _('Admin'),
-        STAFF = 'employee', _('Employee'),
-        VISITOR = 'visitor', _('Visitor')
-
-    first_name = models.CharField(max_length=50, verbose_name=_('First Name'))
-    last_name = models.CharField(max_length=50, verbose_name=_('Last Name'))
-    email = models.EmailField(blank=True, unique=True, verbose_name=_('Email'))
-    gender = models.CharField(choices=Gender.choices, max_length=1, verbose_name=_('Gender'))
-    date_of_birth = models.DateField(
-        validators=[age_validator],
-        verbose_name=_('Date of Birth')
-    )
-    role = models.CharField(
-        choices=Role.choices, max_length=10, default=Role.VISITOR, verbose_name=_('Role')
-    )
-    active = models.BooleanField(default=True, verbose_name=_('Active'))
-    libraries = models.ManyToManyField(Library, verbose_name=_('Libraries'), blank=True, related_name='members')
-
-    @property
-    def age(self):
-        today = timezone.now().date()
-        return (today.year - self.date_of_birth.year -
-                ((today.month, today.year) < (self.date_of_birth.month, self.date_of_birth.day)))
-
-    def __str__(self):
-        return f'{self.first_name} {self.last_name}'
 
 
 class Book(UUIDModel, TimeStampedModel):
     class Genre(models.TextChoices):
-        FICTION = 'Fiction', _('Fiction'),
+        FICTION = 'Fiction', _('Fiction')
         NON_FICTION = 'Non-Fiction', _('Non-Fiction')
-        HORROR = 'Horror', _('Horror'),
+        HORROR = 'Horror', _('Horror')
         HISTORY = 'History', _('History')
 
     title = models.CharField(max_length=50, verbose_name=_('Title'), db_index=True)
@@ -133,7 +107,7 @@ class Book(UUIDModel, TimeStampedModel):
         verbose_name=_('Author')
     )
 
-    published_at = models.DateField()
+    published_at = models.DateField(verbose_name=_('Published at'))
     genre = models.CharField(choices=Genre.choices, max_length=20, verbose_name=_('Genre'))
     page_count = models.IntegerField(
         null=True,
@@ -150,10 +124,10 @@ class Book(UUIDModel, TimeStampedModel):
         verbose_name=_('Category')
     )
     publisher = models.ForeignKey(
-        Member,
+        settings.AUTH_USER_MODEL,
         null=True,
         blank=True,
-        related_name='books',
+        related_name='published_books',
         on_delete=models.SET_NULL,
         verbose_name=_('Publisher')
     )
@@ -175,18 +149,15 @@ class Book(UUIDModel, TimeStampedModel):
 
     @property
     def rating(self):
-        reviews = self.reviews.all()
-        total_reviews = reviews.count()
-        if total_reviews == 0:
-            return 0
-        total_rating = sum(review.rating for review in reviews)
-        return round(total_rating / total_reviews, 2)
+        from django.db.models import Avg
+        avg = self.reviews.aggregate(avg=Avg('rating'))['avg']
+        return round(avg, 2) if avg is not None else 0
 
     def __str__(self):
-        return f'{self.title}'
+        return self.title
 
 
-class Posts(TimeStampedModel):
+class Post(TimeStampedModel):
     title = models.CharField(max_length=50, verbose_name=_('Title'))
     body = models.TextField(verbose_name=_('Body'))
     author = models.ForeignKey(
@@ -194,8 +165,8 @@ class Posts(TimeStampedModel):
         null=True,
         blank=True,
         on_delete=models.SET_NULL,
+        related_name='posts',
         verbose_name=_('Author'),
-        related_name='posts'
     )
 
     moderated = models.BooleanField(default=False, verbose_name=_('Moderated'))
@@ -206,13 +177,17 @@ class Posts(TimeStampedModel):
         verbose_name=_('Library')
     )
 
+    class Meta:
+        verbose_name = _('Post')
+        verbose_name_plural = _('Posts')
+
     def __str__(self):
         return f'{self.title} - {self.author} - {self.body[:20]}'
 
 
 class Borrow(TimeStampedModel):
     member = models.ForeignKey(
-        Member,
+        settings.AUTH_USER_MODEL,
         null=True,
         blank=True,
         on_delete=models.SET_NULL,
@@ -235,15 +210,19 @@ class Borrow(TimeStampedModel):
         related_name='borrows',
         verbose_name=_('Library')
     )
-    borrow_date = models.DateField()
-    return_date = models.DateField()
+    borrow_date = models.DateField(verbose_name=_('Borrow date'))
+    return_date = models.DateField(verbose_name=_('Return date'))
     returned = models.BooleanField(default=False, verbose_name=_('Returned'))
+
+    class Meta:
+        verbose_name = _('Borrow')
+        verbose_name_plural = _('Borrows')
 
     @property
     def is_overdue(self):
         if self.returned:
-            return True
-        return self.return_date <= timezone.now().date()
+            return False
+        return self.return_date < timezone.now().date()
 
     def __str__(self):
         return f'{self.member} - {self.book} - {self.return_date}'
@@ -251,20 +230,35 @@ class Borrow(TimeStampedModel):
 
 class Review(TimeStampedModel):
     book = models.ForeignKey(Book, on_delete=models.CASCADE, related_name='reviews')
-    reviewer = models.ForeignKey(Member, null=True, blank=True, on_delete=models.SET_NULL, related_name='reviews')
+    reviewer = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name='reviews'
+    )
     rating = models.FloatField(validators=[MinValueValidator(1), MaxValueValidator(5)])
     description = models.TextField()
 
+    class Meta:
+        verbose_name = _('Review')
+        verbose_name_plural = _('Reviews')
+        unique_together = ('book', 'reviewer')  # один отзыв на книгу от пользователя
+
     def __str__(self):
-        return f"Review of {self.book} by {self.reviewer}"
+        return f'Review of {self.book} by {self.reviewer}'
 
 
 class Event(UUIDModel, TimeStampedModel):
-    title = models.CharField(max_length=255)
-    description = models.TextField()
-    date = models.DateTimeField()
+    title = models.CharField(max_length=255, verbose_name=_('Title'))
+    description = models.TextField(verbose_name=_('Description'))
+    date = models.DateTimeField(verbose_name=_('Date'))
     library = models.ForeignKey(Library, on_delete=models.CASCADE, related_name='events')
     books = models.ManyToManyField(Book, related_name='events', blank=True)
+
+    class Meta:
+        verbose_name = _('Event')
+        verbose_name_plural = _('Events')
 
     def __str__(self):
         return self.title
@@ -272,16 +266,17 @@ class Event(UUIDModel, TimeStampedModel):
 
 class EventParticipant(TimeStampedModel):
     event = models.ForeignKey(Event, on_delete=models.CASCADE, related_name='participants')
-    member = models.ForeignKey(Member, on_delete=models.CASCADE, related_name='event_participations')
-    registration_date = models.DateField(default=timezone.now)
+    member = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.CASCADE,
+        related_name='event_participations'
+    )
+    registration_date = models.DateField(default=timezone.localdate, verbose_name=_('Registration date'))
+
+    class Meta:
+        verbose_name = _('Event Participant')
+        verbose_name_plural = _('Event Participants')
+        unique_together = ('event', 'member')  # нельзя зарегистрироваться дважды
 
     def __str__(self):
-        return f"{self.member} on {self.event}"
-
-
-
-
-
-
-
-
+        return f'{self.member} on {self.event}'
