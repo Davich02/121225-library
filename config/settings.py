@@ -83,7 +83,7 @@ TEMPLATES = [
 
 
 REST_FRAMEWORK = {
-    'EXCEPTION_HANDLER': 'apps.library.exceptions.exception_handler.exception_handler'
+    'EXCEPTION_HANDLER': 'apps.library.exceptions.exception_handler.custom_exception_handler'
 }
 
 
